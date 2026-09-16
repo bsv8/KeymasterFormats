@@ -187,7 +187,7 @@ Base64URL 在本格式中统一使用**无填充**形式:只允许
 算法和长度不是可选字段,改变它们必须提升 `version`:
 
 ```
-passwordBytes = UTF-8(用户输入的桶密码)
+passwordBytes = UTF-8(用户输入的引导密码)
 encryptionKey = PBKDF2-HMAC-SHA-256(
   passwordBytes,
   salt = decodeBase64Url(config.keyDerivation.saltB64Url),
@@ -255,8 +255,10 @@ AAD 同时绑定连接的逻辑 ID、公开坐标和 KDF 参数。读取方必�
 
 #### 密码校验发生在哪里
 
-- **local 连接**:设备记录不参与密码校验;密码由桶内记录校验(桶格式另行定义)。
-- **s3 连接**:校验点就是"能否解开 `cipher`";密码错误或密文被改动都会因认证标签失败。
+- **local 连接**:没有密封配置,本记录不参与密码校验。
+- **s3 连接**:**引导密码**的校验点就是"能否解开 `cipher`";密码错误或密文被改动都会因认证标签失败。
+
+> Key 自己的密码与本记录无关:私钥密码属于 `keys/<公钥>.keyhold` 里的 KeyHold 文档(见该格式文档)。
 
 #### 设计取舍:为什么 local 没有 config
 
@@ -310,7 +312,7 @@ AAD 同时绑定连接的逻辑 ID、公开坐标和 KDF 参数。读取方必�
 
 | 允许出现 | 禁止出现 |
 | --- | --- |
-| 逻辑 ID、显示名、公开坐标 | 桶密码、派生密钥 |
+| 逻辑 ID、显示名、公开坐标 | 引导密码、Key 密码、派生密钥 |
 | 公开 KDF 参数(迭代次数、盐) | S3 AccessKey / Secret / sessionToken 明文 |
 | 密封配置的密文封装与随机 IV | 私钥、助记词、业务数据 |
 | 不含凭据的 s3 endpoint / bucket / prefix | 公开 `location` 中出现任何凭据 |
