@@ -43,7 +43,7 @@
 }
 ```
 
-### 形态 B:s3(公开坐标 + 凭据密文)
+### 形态 B:s3(公开坐标 + 凭据密文 + 可选能力缓存)
 
 ```jsonc
 {
@@ -63,6 +63,9 @@
     "ivB64Url": "gT3kQ1sPvJ0mYw12",
     "tagLengthBits": 128,
     "ciphertextAndTagB64Url": "kQ9fLx2mR7dW3cV1nB8sT4hJ6pA0uZ5yE2oI9gK3rM7qX1tCpL4vN8xQ2sD6fG0h"
+  },
+  "capabilities": {                         // 可选:条件写能力缓存
+    "conditionalWrites": "native"
   }
 }
 ```
@@ -75,6 +78,7 @@
 | `displayName` | 可选 | 可选 |
 | `location` | 只有 `providerId` | 公开坐标 |
 | `cipher` | **禁止出现** | **必需**,凭据密文 |
+| `capabilities` | **禁止出现** | 可选,条件写能力缓存 |
 
 字段说明:
 
@@ -85,6 +89,7 @@
 | `displayName` | 字符串 | 否 | 本机显示名称(可中文),1~128 字符;省略时读取方按坐标生成默认名 |
 | `location` | 对象 | 是 | 不含访问凭据的公开坐标,两种变体见下 |
 | `cipher` | 对象 | s3 必需 | 用启动密码派生的 key 加密的凭据密文;local 记录不得出现该字段 |
+| `capabilities` | 对象 | 否 | 仅 s3:已探测到的条件写能力缓存,见下;local 记录不得出现该字段 |
 
 不复存 `remoteStorageId`:键名里的 `<ID>` 是唯一真值。
 
@@ -134,6 +139,30 @@
 位置指纹不落盘:需要比较时读取方自行计算。记录中也不允许出现
 `physicalLocationFingerprint`、创建/更新时间、来源、恢复指针、轮转事务或
 Worker profile 等字段;这些字段不是本格式的一部分。
+
+### capabilities — s3 专属的条件写能力缓存
+
+`s3` 记录可以缓存一次探测得到的条件写能力,避免每次连接/读取桶时重复对远端发送写探针。
+
+```jsonc
+{
+  "conditionalWrites": "native"       // 仅 "native" | "best-effort"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `conditionalWrites` | 字符串枚举 | 是 | `"native"`:服务端原生执行 `If-None-Match` / `If-Match`(原子);`"best-effort"`:服务端忽略条件头,改用读 ETag 后写入模拟(非原子,接受竞态窗口) |
+
+语义与规则:
+
+- **仅 s3 形态允许**;local 记录出现该字段即整条记录无效(local 没有可缓存的能力结论)。
+- **字段缺失 = 尚未探测**:读取方在需要时执行一次条件写探测,成功后按本记录格式写回。
+- **不设过期时间、不做自动重探**:一旦写入即长期有效;探测结果只通过显式"重新探测"动作更新。
+- **更新以完整记录替换**:更新 `capabilities` 必须保留 `location`、`cipher`、`displayName` 等原字段,且遵循"新增桶"以外的整记录替换规则。
+- **连接配置变更即失效**:`location` 或 `cipher` 指向的连接发生变化时,原 `capabilities` 必须被丢弃(重建记录不写入),由下一次探测重新产生。
+- 缓存被篡改的后果由读取方承担:伪造成 `"best-effort"` 只会导致多余的读后写入;伪造成 `"native"` 会让条件写失去原子保护。本格式不做额外认证(与 `location` 的取舍一致)。
+- 该字段不是秘密,允许明文出现;它不属于密钥、密码或业务数据。
 
 ### cipher — s3 专属的凭据密文
 
@@ -267,8 +296,11 @@ cipher.ciphertextAndTagB64Url = Base64URL(ciphertext || tag)
 5. **变体自洽**:
    - `location.providerId = "local"` 时:记录只允许 `format`、`version`、
      `displayName`、`location`,且 `location` 只允许 `providerId`;
+     `capabilities` 不得出现。
    - `location.providerId = "s3"` 时:`cipher` 必须存在,且只允许
-     `algorithm`、`keyLengthBits`、`ivB64Url`、`tagLengthBits`、`ciphertextAndTagB64Url`。
+     `algorithm`、`keyLengthBits`、`ivB64Url`、`tagLengthBits`、`ciphertextAndTagB64Url`;
+     `capabilities` 可选,出现时只允许 `conditionalWrites`,取值只能是
+     `"native"` 或 `"best-effort"`。
 6. **跨记录唯一**:扫描全部 `keymaster.device.*`,规范化后的 S3
    `location` 不得重复;local 按 `("local", <ID>)` 判断有效物理目标。
 7. **整体大小**:单条序列化后 ≤ 128 KiB;桶数 ≤ 32。
@@ -291,6 +323,7 @@ cipher.ciphertextAndTagB64Url = Base64URL(ciphertext || tag)
 | 允许出现 | 禁止出现 |
 | --- | --- |
 | 逻辑 ID、显示名、公开坐标 | 启动密码(会话密码)、Key 密码、派生密钥 |
+| 条件写能力缓存(`capabilities`) | 任何探测过程产生的远端临时对象内容或凭据 |
 | 不含凭据的 s3 endpoint / bucket / prefix | 公开 `location` 中出现任何凭据 |
 | 密文封装与随机 IV | 私钥、助记词、业务数据;S3 AccessKey / Secret / sessionToken 明文 |
 
@@ -352,6 +385,9 @@ cipher.ciphertextAndTagB64Url = Base64URL(ciphertext || tag)
     "ivB64Url": "AAECAwQFBgcICQoL",
     "tagLengthBits": 128,
     "ciphertextAndTagB64Url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4v"
+  },
+  "capabilities": {
+    "conditionalWrites": "native"
   }
 }
 ```
